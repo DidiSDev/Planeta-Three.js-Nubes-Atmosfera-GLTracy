@@ -1,0 +1,609 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Planeta Realista con Atmósfera Mejorada, Nubes y Estrella Brillante</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #000;
+        }
+    </style>
+    <!-- Import Map PARA MÓDULOS -->
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js",
+            "three/examples/jsm/controls/OrbitControls.js": "https://cdn.jsdelivr.net/npm/three@0.154.0/examples/jsm/controls/OrbitControls.js"
+        }
+    }
+    </script>
+</head>
+<body>
+    <!-- VERTEX SHADER -->
+    <script type="x-shader/x-vertex" id="vertexShader">
+        varying vec2 vUv;
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+
+        void main() {
+            vUv = uv;
+            vNormal = normalize(normalMatrix * normal);
+            vPosition = (modelMatrix * vec4(position, 1.0)).xyz;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+    </script>
+
+    <!-- Fragment Shader para el Planeta con ILUMINACIÓN Y EFECTO FRESNEL -->
+    <script type="x-shader/x-fragment" id="planetFragmentShader">
+        precision mediump float;
+
+        uniform float uTime;
+        uniform vec3 uCameraPosition;
+        uniform vec3 uLightPosition; // Posición de la luz (estrella)
+        uniform vec3 uAmbientColor;   // Color de la luz ambiental
+        uniform float uAmbientIntensity; // Intensidad de la luz ambiental
+        uniform vec2 uResolution;
+
+        varying vec3 vNormal;
+        varying vec3 vPosition;
+
+        // Funciones de ruido
+        float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+        }
+
+        float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(a, b, u.x) +
+                   (c - a) * u.y * (1.0 - u.x) +
+                   (d - b) * u.x * u.y;
+        }
+
+        float fbm(vec2 p) {
+            float total = 0.0;
+            float amplitude = 0.5;
+            for(int i = 0; i < 5; i++) {
+                total += noise(p) * amplitude;
+                p *= 2.0;
+                amplitude *= 0.5;
+            }
+            return total;
+        }
+
+        void main() {
+            // Coordenadas normales
+            vec3 normal = normalize(vNormal);
+            // Dirección hacia la luz
+            vec3 lightDir = normalize(uLightPosition - vPosition);
+            // Intensidad de luz difusa
+            float diff = max(dot(normal, lightDir), 0.0);
+
+            // Dirección de la cámara
+            vec3 viewDir = normalize(uCameraPosition - vPosition);
+            // Reflexión de la luz
+            vec3 reflectDir = reflect(-lightDir, normal);
+            // Intensidad especular
+            float spec = pow(max(dot(viewDir, reflectDir), 0.0), 64.0); // Exponente especular aumentado
+
+            // Término de Fresnel
+            float fresnel = pow(1.0 - max(dot(normal, viewDir), 0.0), 5.0);
+
+            // Variación de color basada en la latitud
+            float latitude = normal.y;
+            vec3 baseColor = mix(vec3(0.0, 0.2, 0.6), vec3(0.0, 0.5, 1.0), latitude * 0.5 + 0.5);
+
+            // Añadir detalles de terreno con FBM
+            float elevation = fbm(normal.xz * 2.0 + uTime * 0.1);
+            elevation = smoothstep(0.3, 0.6, elevation);
+            vec3 terrainColor = mix(vec3(0.2, 0.5, 0.2), vec3(0.8, 0.7, 0.5), elevation);
+
+            // Color final del planeta
+            vec3 color = mix(baseColor, terrainColor, elevation);
+
+            // Luz Ambiental
+            vec3 ambient = uAmbientColor * uAmbientIntensity;
+
+            // Aplicar iluminación difusa y especular
+            color = ambient + (diff * color) + (diff * spec * 0.8); // Multiplicar spec por diff
+
+            // Aplicar el término de Fresnel para reflejos más realistas
+            color = mix(color, vec3(1.0) * spec * diff, fresnel); // Multiplicar spec por diff en el mix
+
+            gl_FragColor = vec4(color, 1.0);
+        }
+    </script>
+
+    <!-- Fragment Shader para NUBES (Adaptado de ShaderToy) -->
+    <script type="x-shader/x-fragment" id="cloudsFragmentShader">
+        precision mediump float;
+
+        uniform float uTime;
+        uniform vec2 uResolution;
+        uniform float cloudscale;
+        uniform float speed;
+        uniform float clouddark;
+        uniform float cloudlight;
+        uniform float cloudcover;
+        uniform float cloudalpha;
+        uniform float skytint;
+        uniform vec3 skycolour1;
+        uniform vec3 skycolour2;
+
+        varying vec2 vUv;
+
+        const mat2 m = mat2( 1.6,  1.2, -1.2,  1.6 );
+
+        vec2 hash( vec2 p ) {
+            p = vec2(dot(p,vec2(127.1,311.7)), dot(p,vec2(269.5,183.3)));
+            return -1.0 + 2.0*fract(sin(p)*43758.5453123);
+        }
+
+        float noise( in vec2 p ) {
+            const float K1 = 0.366025404; // (sqrt(3)-1)/2;
+            const float K2 = 0.211324865; // (3-sqrt(3))/6;
+            vec2 i = floor(p + (p.x + p.y) * K1);
+            vec2 a = p - i + (i.x + i.y) * K2;
+            vec2 o = (a.x > a.y) ? vec2(1.0, 0.0) : vec2(0.0, 1.0);
+            vec2 b = a - o + K2;
+            vec2 c = a - 1.0 + 2.0*K2;
+            vec3 h = max(0.5 - vec3(dot(a,a), dot(b,b), dot(c,c)), 0.0 );
+            vec3 n = h * h * h * h * vec3( dot(a, hash(i + 0.0)), dot(b, hash(i + o)), dot(c, hash(i + 1.0)) );
+            return dot(n, vec3(70.0));    
+        }
+
+        float fbm(vec2 n) {
+            float total = 0.0, amplitude = 0.1;
+            for (int i = 0; i < 7; i++) {
+                total += noise(n) * amplitude;
+                n = m * n;
+                amplitude *= 0.4;
+            }
+            return total;
+        }
+
+        void main() {
+            vec2 p = vUv;
+            vec2 uv = p * vec2(uResolution.x / uResolution.y, 1.0);    
+            float time = uTime * speed;
+            float q = fbm(uv * cloudscale * 0.5);
+            
+            // Ridged noise shape
+            float r = 0.0;
+            uv *= cloudscale;
+            uv -= q - time;
+            float weight = 0.8;
+            for (int i = 0; i < 8; i++) {
+                r += abs(weight * noise(uv));
+                uv = m * uv + time;
+                weight *= 0.7;
+            }
+            
+            // Noise shape
+            float f = 0.0;
+            uv = p * vec2(uResolution.x / uResolution.y, 1.0);
+            uv *= cloudscale;
+            uv -= q - time;
+            weight = 0.7;
+            for (int i = 0; i < 8; i++) {
+                f += weight * noise(uv);
+                uv = m * uv + time;
+                weight *= 0.6;
+            }
+            
+            f *= r + f;
+            
+            // Noise colour
+            float c = 0.0;
+            time = uTime * speed * 2.0;
+            uv = p * vec2(uResolution.x / uResolution.y, 1.0);
+            uv *= cloudscale * 2.0;
+            uv -= q - time;
+            weight = 0.4;
+            for (int i = 0; i < 7; i++) {
+                c += weight * noise(uv);
+                uv = m * uv + time;
+                weight *= 0.6;
+            }
+            
+            // Noise ridge colour
+            float c1 = 0.0;
+            time = uTime * speed * 3.0;
+            uv = p * vec2(uResolution.x / uResolution.y, 1.0);
+            uv *= cloudscale * 3.0;
+            uv -= q - time;
+            weight = 0.4;
+            for (int i = 0; i < 7; i++) {
+                c1 += abs(weight * noise(uv));
+                uv = m * uv + time;
+                weight *= 0.6;
+            }
+        
+            c += c1;
+            
+            vec3 skycolour = mix(skycolour2, skycolour1, p.y);
+            vec3 cloudcolour = vec3(1.1, 1.1, 0.9) * clamp((clouddark + cloudlight * c), 0.0, 1.0);
+           
+            f = cloudcover + cloudalpha * f * r;
+            
+            vec3 result = mix(skycolour, clamp(skytint * skycolour + cloudcolour, 0.0, 1.0), clamp(f + c, 0.0, 1.0));
+            
+            gl_FragColor = vec4(result, 1.0);
+        }
+    </script>
+
+    <!-- Fragment Shader para ATMÓSFERA (GLTracy inspired) -->
+    <script type="x-shader/x-fragment" id="atmosphereFragmentShader">
+        precision mediump float;
+
+        uniform vec3 uCameraPosition;
+        uniform vec3 uLightDirection; // Dirección de la luz (desde el sol)
+        uniform float uTime; // No utilizado pero mantenido por si se requiere en el futuro
+        uniform vec2 uResolution;
+        uniform float uR_INNER;
+        uniform float uR;
+
+        varying vec3 vPosition;
+
+        // Constantes
+        const float PI = 3.14159265359;
+        const float MAX = 10000.0;
+
+        // Funciones de Intersección Ray-Sphere
+        vec2 ray_vs_sphere(vec3 p, vec3 dir, float r) {
+            float b = dot(p, dir);
+            float c = dot(p, p) - r * r;
+            float d = b * b - c;
+            if (d < 0.0) {
+                return vec2(MAX, -MAX);
+            }
+            d = sqrt(d);
+            return vec2(-b - d, -b + d);
+        }
+
+        // Funciones de Fase Mie y Rayleigh
+        float phase_mie(float g, float c, float cc) {
+            float gg = g * g;
+            float a = (1.0 - gg) * (1.0 + cc);
+            float b = 1.0 + gg - 2.0 * g * c;
+            b *= sqrt(b);
+            b *= 2.0 + gg;
+            return (3.0 / (8.0 * PI)) * a / b;
+        }
+
+        float phase_ray(float cc) {
+            return (3.0 / (16.0 * PI)) * (1.0 + cc);
+        }
+
+        // Constantes de Dispersión
+        const int NUM_OUT_SCATTER = 8;
+        const int NUM_IN_SCATTER = 80;
+
+        // Función de Densidad
+        float density(vec3 p, float ph) {
+            return exp(-max(length(p) - uR_INNER, 0.0) / ph);
+        }
+
+        // Función de Óptica
+        float optic(vec3 p, vec3 q, float ph) {
+            vec3 s = (q - p) / float(NUM_OUT_SCATTER);
+            vec3 v = p + s * 0.5;
+            float sum = 0.0;
+            for(int i = 0; i < NUM_OUT_SCATTER; i++) {
+                sum += density(v, ph);
+                v += s;
+            }
+            sum *= length(s);
+            return sum;
+        }
+
+        // Función de Dispersión Interna
+        vec3 in_scatter(vec3 o, vec3 dir, vec2 e, vec3 l) {
+            const float ph_ray = 0.05;
+            const float ph_mie = 0.02;
+
+            const vec3 k_ray = vec3(3.8, 13.5, 33.1);
+            const vec3 k_mie = vec3(21.0);
+            const float k_mie_ex = 1.1;
+
+            vec3 sum_ray = vec3(0.0);
+            vec3 sum_mie = vec3(0.0);
+
+            float n_ray0 = 0.0;
+            float n_mie0 = 0.0;
+
+            float len = (e.y - e.x) / float(NUM_IN_SCATTER);
+            vec3 s = dir * len;
+            vec3 v = o + dir * (e.x + len * 0.5);
+
+            for(int i = 0; i < NUM_IN_SCATTER; i++, v += s) {   
+                float d_ray = density(v, ph_ray) * len;
+                float d_mie = density(v, ph_mie) * len;
+
+                n_ray0 += d_ray;
+                n_mie0 += d_mie;
+
+                vec2 f = ray_vs_sphere(v, l, uR);
+                vec3 u = v + l * f.y;
+
+                float n_ray1 = optic(v, u, ph_ray);
+                float n_mie1 = optic(v, u, ph_mie);
+
+                vec3 att = exp(- (n_ray0 + n_ray1) * k_ray - (n_mie0 + n_mie1) * k_mie * k_mie_ex);
+
+                sum_ray += d_ray * att;
+                sum_mie += d_mie * att;
+            }
+
+            float c = dot(dir, -l);
+            float cc = c * c;
+            vec3 scatter = sum_ray * k_ray * phase_ray(cc) +
+                           sum_mie * k_mie * phase_mie(-0.78, c, cc);
+
+            return 10.0 * scatter;
+        }
+
+        // Rotación de la Cámara (Eliminada para evitar movimiento independiente)
+        // mat3 rot3xy(vec2 angle) {
+        //     vec2 c = cos(angle);
+        //     vec2 s = sin(angle);
+
+        //     return mat3(
+        //         c.y,      0.0, -s.y,
+        //         s.y * s.x,  c.x,  c.y * s.x,
+        //         s.y * c.x, -s.x,  c.y * c.x
+        //     );
+        // }
+
+        // Dirección del Rayo (No se utiliza en este shader)
+        // vec3 ray_dir(float fov, vec2 size, vec2 pos) {
+        //     vec2 xy = pos - size * 0.5;
+        //     float cot_half_fov = tan(radians(90.0 - fov * 0.5));	
+        //     float z = size.y * 0.5 * cot_half_fov;
+        //     return normalize(vec3(xy, -z));
+        // }
+
+        void main() {
+            // Coordenadas de fragmento
+            vec2 fragCoord = gl_FragCoord.xy;
+
+            // Dirección del rayo (se utiliza la dirección normal del fragmento)
+            vec3 dir = normalize(vPosition - uCameraPosition);
+            
+            // Origen del rayo (posición de la cámara)
+            vec3 eye = uCameraPosition;
+
+            // Dirección de la luz (sol)
+            vec3 l = normalize(uLightDirection);
+
+            // Intersección del rayo con la esfera grande (atmósfera)
+            vec2 e = ray_vs_sphere(eye, dir, uR);
+            if (e.x > e.y) {
+                gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+                return;
+            }
+
+            // Intersección del rayo con la esfera interna (planeta)
+            vec2 f = ray_vs_sphere(eye, dir, uR_INNER);
+            e.y = min(e.y, f.x);
+
+            // Cálculo de la dispersión
+            vec3 I = in_scatter(eye, dir, e, l);
+
+            // Aplicar corrección de gama
+            I = pow(I, vec3(1.0 / 2.2));
+
+            // Asignar color final
+            gl_FragColor = vec4(I, 1.0);
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+
+        //  R y R_INNER JS
+        const R_INNER = 1.0;
+        const R = R_INNER + 0.5; // 1.5
+
+        // Crear escena
+        const scene = new THREE.Scene();
+
+        // Crear cámara
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 0, 5);
+
+        // Crear renderizador
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.shadowMap.enabled = true; // Habilitar mapas de sombras si decides usarlos
+        document.body.appendChild(renderer.domElement);
+
+        // CONTROLES DE ÓRBITA
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        controls.dampingFactor = 0.05;
+
+        // Añadir una luz puntual (simulando estrella)
+        const pointLight = new THREE.PointLight(0xffffff, 1.5, 1000, 2); // Intensidad ajustada
+        pointLight.position.set(5, 3, 5);
+        scene.add(pointLight);
+
+        // LUZ AMBIENTAL
+        const ambientLight = new THREE.AmbientLight(0x000000, 0.0); // Color negro y sin intensidad
+        scene.add(ambientLight);
+
+        // CREACIÓN DE PLANETA
+        const planetGeometry = new THREE.SphereGeometry(R_INNER, 64, 64);
+        const planetMaterial = new THREE.ShaderMaterial({
+            vertexShader: document.getElementById('vertexShader').textContent,
+            fragmentShader: document.getElementById('planetFragmentShader').textContent,
+            uniforms: {
+                uTime: { value: 0 },
+                uCameraPosition: { value: camera.position },
+                uLightPosition: { value: pointLight.position },
+                uAmbientColor: { value: ambientLight.color },      // Uniform para el color de la luz ambiental
+                uAmbientIntensity: { value: ambientLight.intensity }, // Uniform para la intensidad de la luz ambiental
+                uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) }
+            },
+            transparent: false, // planeta no transparente
+            depthWrite: true,    // profundidad
+            side: THREE.FrontSide // renderizar caras frontales
+        });
+        const planet = new THREE.Mesh(planetGeometry, planetMaterial);
+        scene.add(planet);
+
+        // Crear las nubes usando el shader adaptado
+        const cloudsGeometry = new THREE.SphereGeometry(R_INNER + 0.01, 64, 64); 
+        const cloudsMaterial = new THREE.ShaderMaterial({
+            vertexShader: document.getElementById('vertexShader').textContent,
+            fragmentShader: document.getElementById('cloudsFragmentShader').textContent,
+            transparent: true,
+            depthWrite: false,
+            blending: THREE.NormalBlending, 
+            side: THREE.FrontSide,
+            uniforms: {
+                uTime: { value: 0 },
+                uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+                cloudscale: { value: 1.1 },
+                speed: { value: 0.03 },
+                clouddark: { value: 0.5 },
+                cloudlight: { value: 0.3 },
+                cloudcover: { value: 0.2 },
+                cloudalpha: { value: 8.0 },
+                skytint: { value: 0.5 },
+                skycolour1: { value: new THREE.Color(0.2, 0.4, 0.6) },
+                skycolour2: { value: new THREE.Color(0.4, 0.7, 1.0) }
+            }
+        });
+        const clouds = new THREE.Mesh(cloudsGeometry, cloudsMaterial);
+        scene.add(clouds);
+
+        //Creando la atmósfera usando el shader de GLtracy
+        const atmosphereGeometry = new THREE.SphereGeometry(R, 128, 128); // R definido en JS
+        const atmosphereMaterial = new THREE.ShaderMaterial({
+            vertexShader: document.getElementById('vertexShader').textContent,
+            fragmentShader: document.getElementById('atmosphereFragmentShader').textContent,
+            blending: THREE.AdditiveBlending, // Blending para resplandor
+            side: THREE.BackSide, // Renderizar el lado posterior para la atmósfera
+            transparent: true,
+            depthWrite: false,
+            uniforms: {
+                uCameraPosition: { value: camera.position },
+                uLightDirection: { value: pointLight.position.clone().normalize() }, // Dirección de la luz
+                uTime: { value: 0 }, // No utilizado pero mantenido por si se requiere en el futuro, actualmente será la cámara quien lo meuva
+                uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
+                uR_INNER: { value: R_INNER },
+                uR: { value: R }
+            }
+        });
+        const atmosphere = new THREE.Mesh(atmosphereGeometry, atmosphereMaterial);
+        scene.add(atmosphere);
+
+        // Creación estrella
+        const starGeometry = new THREE.SphereGeometry(0.2, 32, 32); // SOLO ES DE PEGA
+        const starMaterial = new THREE.MeshStandardMaterial({
+            color: 0xffffff,
+            emissive: 0xffffff,
+            emissiveIntensity: 5, 
+            side: THREE.FrontSide
+        });
+        const star = new THREE.Mesh(starGeometry, starMaterial);
+        star.position.copy(pointLight.position);
+        scene.add(star);
+
+        // * Añadir el efecto de resplandor a la estrella usando un Sprite sin imagen *
+        // textura procedimental con un gradiente radial
+        const createGlowTexture = () => {
+            const size = 256;
+            const canvas = document.createElement('canvas');
+            canvas.width = size;
+            canvas.height = size;
+            const context = canvas.getContext('2d');
+
+            // Crear un gradiente radial
+            const gradient = context.createRadialGradient(
+                size / 2, size / 2, 0,
+                size / 2, size / 2, size / 2
+            );
+            gradient.addColorStop(0, 'rgba(255, 255, 255, 1)');
+            gradient.addColorStop(0.2, 'rgba(255, 255, 255, 0.8)');
+            gradient.addColorStop(0.4, 'rgba(255, 255, 255, 0.6)');
+            gradient.addColorStop(0.6, 'rgba(255, 255, 255, 0.4)');
+            gradient.addColorStop(0.8, 'rgba(255, 255, 255, 0.2)');
+            gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+
+            // Gradiente en el canvas
+            context.fillStyle = gradient;
+            context.fillRect(0, 0, size, size);
+
+            // Textura a partir del canvas
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        };
+
+        const starSpriteMaterial = new THREE.SpriteMaterial({
+            map: createGlowTexture(),
+            color: 0xFFD966,
+            blending: THREE.AdditiveBlending, // Blending para resplandor
+            transparent: true,
+            depthWrite: false,
+        });
+
+        const starSprite = new THREE.Sprite(starSpriteMaterial);
+        starSprite.scale.set(1.5, 1.5, 1.5); 
+        starSprite.position.copy(pointLight.position);
+        scene.add(starSprite);
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+
+            planetMaterial.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+            cloudsMaterial.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+            atmosphereMaterial.uniforms.uResolution.value.set(window.innerWidth, window.innerHeight);
+        }, false);
+
+        //ANIMACION
+        const clockAnim = new THREE.Clock();
+        const animateScene = function () {
+            requestAnimationFrame(animateScene);
+
+            const elapsed = clockAnim.getElapsedTime();
+
+            planet.rotation.y += 0.005;
+
+            // Rotar nubes lentamente para dar efecto de movimiento
+            clouds.rotation.y += 0.001;
+
+            // Actualizar los uniformes de los shaders
+            planetMaterial.uniforms.uTime.value = elapsed;
+            cloudsMaterial.uniforms.uTime.value = elapsed;
+            atmosphereMaterial.uniforms.uTime.value = elapsed; // Aunque no se usa en el shader, se mantiene por compatibilidad
+
+            // Actualizar la dirección de la luz (si la luz se mueve)
+            atmosphereMaterial.uniforms.uLightDirection.value.copy(pointLight.position).normalize();
+
+            // Actualizar las capas atm
+            atmosphereMaterial.uniforms.uCameraPosition.value.copy(camera.position);
+            
+            star.position.copy(pointLight.position);
+            starSprite.position.copy(pointLight.position); 
+            controls.update();
+            renderer.render(scene, camera);
+        };
+
+        animateScene();
+    </script>
+</body>
+</html>
